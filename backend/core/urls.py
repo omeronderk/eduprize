@@ -8,6 +8,8 @@ urlpatterns = [
     path('api/business_games/<str:business_code>/', views.business_games, name='business_games'),
     path('api/gameplays/', GamePlayListView.as_view(), name='gameplay-list'),
     path('api/login/', login_view, name='login'),
-    path('api/logout/', logout_view, name='logout'),
+    path('api/logout/', views.logout_view, name='logout'),
     path('api/whoami/', whoami, name='whoami'),
+    path('api/where_am_i/', views.where_am_i, name='where_am_i'),           # NEW
+    path('api/play_status/', views.play_status, name='play_status'),        
 ]

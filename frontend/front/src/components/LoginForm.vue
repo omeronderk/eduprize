@@ -51,6 +51,8 @@ const login = async () => {
         router.push('/admin-dashboard')
       } else if (whoamiData.role === 'business_user') {
         router.push('/business-dashboard')
+      } else if (whoamiData.role === 'player') {
+        router.push('/play')
       } else {
         message.value = 'Tanımsız rol. Erişim izniniz yok.'
       }
@@ -74,15 +76,18 @@ const login = async () => {
   background-color: #1e1e1e;
   color: white;
 }
+
 .login-form label {
   display: block;
   margin-bottom: 0.25rem;
 }
+
 .login-form input {
   width: 100%;
   padding: 0.5rem;
   margin-bottom: 1rem;
 }
+
 button {
   width: 100%;
   padding: 0.5rem;
@@ -91,6 +96,7 @@ button {
   color: white;
   cursor: pointer;
 }
+
 button:hover {
   background-color: #36986a;
 }
