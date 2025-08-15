@@ -38,9 +38,9 @@ class RewardAdmin(admin.ModelAdmin):
 
 @admin.register(GamePlay)
 class GamePlayAdmin(admin.ModelAdmin):
-    list_display = ['get_business', 'get_game', 'ip_address', 'result', 'timestamp']
-    list_filter = ['business', 'game', 'result']
-    search_fields = ['ip_address']
+    list_display = ['get_business', 'get_game', 'ip_address', 'player', 'result', 'timestamp']
+    list_filter = ['business', 'game', 'result', 'player']
+    search_fields = ['ip_address', 'player__username']
     ordering = ['-timestamp']
 
     def get_business(self, obj):

@@ -13,14 +13,19 @@ from django.views.decorators.csrf import csrf_exempt
 from django.contrib.auth.models import User
 from django.views.decorators.http import require_GET
 from django.db.models import Q
-
+from django.views.decorators.http import require_http_methods
+from django.contrib.auth.decorators import login_required
+from django.db import IntegrityError
 def _ip_in_range(ip: str, range_str: str) -> bool:
     if not range_str:
         return False
     if range_str.endswith("*"):
         return ip.startswith(range_str[:-1])
     return ip == range_str
-
+def _today_range():
+    start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+    return start, end
 @require_GET
 def where_am_i(request):
     ip = request.GET.get("ip")
@@ -135,6 +140,7 @@ def play_game(request):
             business=business,
             game=game,
             ip_address=ip_address,
+            player=request.user if request.user.is_authenticated and not request.user.is_superuser else None,
             result=won,
             timestamp=timezone.now()
         )
@@ -237,3 +243,165 @@ def play_status(request):
         "used": used,
         "remaining": remaining
     })
+def _get_business_for_request_user(request):
+    """Business user için bağlı işletmeyi döndürür; admin ise ?unique_code= ile hedef seçebilir."""
+    user = request.user
+    if user.is_superuser:
+        code = request.GET.get("unique_code")
+        if not code:
+            return None, JsonResponse({"error": "Admin için unique_code zorunlu."}, status=400)
+        b = Business.objects.filter(unique_code=code).first()
+        if not b:
+            return None, JsonResponse({"error": "İşletme bulunamadı."}, status=404)
+        return b, None
+    else:
+        b = Business.objects.filter(user=user).first()
+        if not b:
+            return None, JsonResponse({"error": "Bu kullanıcıya bağlı işletme yok."}, status=403)
+        return b, None
+
+@login_required
+@require_http_methods(["GET"])
+def business_summary(request):
+    """İşletme kullanıcısı için anlık özet + oyun başına istatistikler."""
+    business, err = _get_business_for_request_user(request)
+    if err:
+        return err
+
+    start, end = _today_range()
+    today_qs = GamePlay.objects.filter(business=business, timestamp__range=(start, end))
+
+    total = today_qs.count()
+    wins = today_qs.filter(result=True).count()
+    losses = total - wins
+    unique_ips = today_qs.values("ip_address").distinct().count()
+
+    bg_list = BusinessGame.objects.filter(business=business).select_related("game")
+    games = []
+    for bg in bg_list:
+        g_qs = today_qs.filter(game=bg.game)
+        g_total = g_qs.count()
+        g_wins = g_qs.filter(result=True).count()
+        games.append({
+            "business_game_id": bg.id,
+            "game_id": bg.game.id,
+            "game_name": bg.game.name,
+            "win_probability": bg.win_probability,
+            "plays_today": g_total,
+            "wins_today": g_wins,
+            "losses_today": g_total - g_wins,
+        })
+
+    return JsonResponse({
+        "business": {
+            "name": business.name,
+            "unique_code": business.unique_code,
+            "daily_game_limit_per_ip": business.daily_game_limit_per_ip,
+        },
+        "today": {
+            "total": total,
+            "wins": wins,
+            "losses": losses,
+            "unique_ips": unique_ips,
+        },
+        "games": games,
+    })
+
+@login_required
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def business_games_manage(request):
+    """
+    GET: İşletmenin BusinessGame listesi
+    POST: {game_id, win_probability} ile yeni ilişki ekle (0..1 doğrulaması + unique constraint)
+    """
+    business, err = _get_business_for_request_user(request)
+    if err:
+        return err
+
+    if request.method == "GET":
+        items = BusinessGame.objects.filter(business=business).select_related("game")
+        data = [{
+            "business_game_id": i.id,
+            "game_id": i.game.id,
+            "game_name": i.game.name,
+            "win_probability": i.win_probability,
+        } for i in items]
+        return JsonResponse({"business": {"name": business.name, "unique_code": business.unique_code}, "items": data})
+
+    # POST
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Geçersiz JSON."}, status=400)
+
+    game_id = payload.get("game_id")
+    win_probability = payload.get("win_probability")
+
+    if game_id is None or win_probability is None:
+        return JsonResponse({"error": "game_id ve win_probability zorunludur."}, status=400)
+
+    try:
+        wp = float(win_probability)
+        if not (0.0 <= wp <= 1.0):
+            return JsonResponse({"error": "win_probability 0.0 ile 1.0 arasında olmalı."}, status=400)
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "win_probability sayısal olmalı."}, status=400)
+
+    try:
+        game = Game.objects.get(id=game_id)
+    except Game.DoesNotExist:
+        return JsonResponse({"error": "Oyun bulunamadı."}, status=404)
+
+    try:
+        obj, created = BusinessGame.objects.get_or_create(
+            business=business, game=game, defaults={"win_probability": wp}
+        )
+        if not created:
+            return JsonResponse({"error": "Bu oyun zaten işletmeye ekli."}, status=409)
+    except IntegrityError:
+        return JsonResponse({"error": "Bu oyun zaten işletmeye ekli."}, status=409)
+
+    return JsonResponse({
+        "message": "Oyun işletmeye eklendi.",
+        "business_game_id": obj.id
+    }, status=201)
+
+@login_required
+@csrf_exempt
+@require_http_methods(["PATCH", "DELETE"])
+def business_game_detail(request, pk: int):
+    """
+    PATCH: {win_probability} güncelle
+    DELETE: ilişkiyi kaldır
+    """
+    try:
+        bg = BusinessGame.objects.select_related("business").get(id=pk)
+    except BusinessGame.DoesNotExist:
+        return JsonResponse({"error": "Kayıt bulunamadı."}, status=404)
+
+    # Yetki kontrolü
+    if not (request.user.is_superuser or (bg.business.user_id == request.user.id)):
+        return JsonResponse({"error": "Yetkisiz."}, status=403)
+
+    if request.method == "DELETE":
+        bg.delete()
+        return JsonResponse({"message": "Silindi."})
+
+    # PATCH
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Geçersiz JSON."}, status=400)
+
+    if "win_probability" in payload:
+        try:
+            wp = float(payload["win_probability"])
+            if not (0.0 <= wp <= 1.0):
+                return JsonResponse({"error": "win_probability 0.0 ile 1.0 arasında olmalı."}, status=400)
+        except (TypeError, ValueError):
+            return JsonResponse({"error": "win_probability sayısal olmalı."}, status=400)
+        bg.win_probability = wp
+        bg.save(update_fields=["win_probability"])
+
+    return JsonResponse({"message": "Güncellendi.", "win_probability": bg.win_probability})

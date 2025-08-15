@@ -1,6 +1,4 @@
 from django.db import models
-from django.contrib.auth.models import User 
-
 from django.contrib.auth.models import User  # Veya eğer custom user kullanıyorsan onu import et
 
 class Business(models.Model):
@@ -42,14 +40,19 @@ class Reward(models.Model):
     def __str__(self):
         return f"{self.title} ({self.business_game})"
 
+
+
 class GamePlay(models.Model):
     business = models.ForeignKey(Business, on_delete=models.CASCADE)
     game = models.ForeignKey(Game, on_delete=models.CASCADE)
     ip_address = models.GenericIPAddressField()
+    # YENİ: oyunu oynayan kullanıcı (müşteri) – opsiyonel
+    player = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='plays')
     result = models.BooleanField()
     timestamp = models.DateTimeField()
 
     def __str__(self):
         return f"{self.business.name} - {self.game.name} - {'Kazandı' if self.result else 'Kaybetti'}"
+
 
 
