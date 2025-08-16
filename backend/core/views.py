@@ -1,6 +1,7 @@
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
+from datetime import datetime, time
 from datetime import timedelta
 import random
 import json
@@ -447,10 +448,10 @@ def report_gameplays(request):
     GET /api/reports/gameplays?start=2025-07-15&end=2025-07-18
         &game=2&user=hasankose&result=win&page=1&page_size=50
     """
-    start, end = _parse_date_range(request)
+    start_dt, end_dt = _get_range_from_request(request)
 
     qs = GamePlay.objects.select_related('business', 'game', 'player') \
-        .filter(timestamp__gte=start, timestamp__lt=end)
+        .filter(timestamp__gte=start_dt, timestamp__lte=end_dt)
 
     qs = _business_scope_queryset(request, qs)
 
@@ -509,8 +510,9 @@ def report_summary(request):
     GET /api/reports/summary?period=day|week|month&start=2025-07-01&end=2025-07-31
     Opsiyonel: &game=2
     """
-    start, end = _parse_date_range(request)
-
+    start_dt, end_dt = _get_range_from_request(request)
+    qs = GamePlay.objects.filter(timestamp__gte=start_dt, timestamp__lte=end_dt)
+    
     period = request.GET.get('period', 'day')
     if period == 'week':
         trunc = TruncWeek('timestamp')
@@ -547,19 +549,24 @@ def report_summary(request):
 
     return JsonResponse({'period': period, 'data': data})
 
-def parse_date_any(value: str):
-    """'YYYY-MM-DD' ya da 'DD.MM.YYYY' formatlarını kabul eder."""
-    if not value:
+def _parse_date_any(s: str):
+    if not s:
         return None
-    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y"):
         try:
-            return datetime.strptime(value, fmt).date()
+            return datetime.strptime(s, fmt).date()
         except ValueError:
-            continue
+            pass
     return None
-def day_bounds(d):
-    """Yerel günün [start, end) aware datetime sınırları."""
-    start_naive = datetime.combine(d, datetime.min.time())
-    start = timezone.make_aware(start_naive)
-    end = start + timedelta(days=1)
-    return start, end
+
+# start/end string → TZ-aware datetime [00:00:00 .. 23:59:59]
+def _get_range_from_request(request):
+    start_str = request.GET.get("start")
+    end_str   = request.GET.get("end")
+    start_date = _parse_date_any(start_str) or timezone.localdate()
+    end_date   = _parse_date_any(end_str) or start_date
+
+    tz = timezone.get_current_timezone()
+    start_dt = timezone.make_aware(datetime.combine(start_date, time.min), tz)
+    end_dt   = timezone.make_aware(datetime.combine(end_date, time.max), tz)
+    return start_dt, end_dt

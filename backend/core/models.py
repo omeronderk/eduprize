@@ -47,7 +47,7 @@ class GamePlay(models.Model):
     game = models.ForeignKey(Game, on_delete=models.CASCADE)
     ip_address = models.GenericIPAddressField()
     # YENİ: oyunu oynayan kullanıcı (müşteri) – opsiyonel
-    player = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='plays')
+    player = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='gameplays')
     result = models.BooleanField()
     timestamp = models.DateTimeField()
 

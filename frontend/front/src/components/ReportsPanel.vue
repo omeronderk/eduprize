@@ -117,7 +117,14 @@
 
 <script setup>
 import { ref } from 'vue'
-
+const toISO = (s) => {
+  if (!s) return ''
+  // zaten ISO ise bırak
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
+  // dd.MM.yyyy veya dd/MM/yyyy -> yyyy-mm-dd
+  const m = s.match(/^(\d{2})[./](\d{2})[./](\d{4})$/)
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : s
+}
 const today = new Date()
 const toYMD = (d) => d.toISOString().slice(0,10)
 const sevenDaysAgo = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 7)
@@ -140,8 +147,8 @@ async function fetchSummary() {
   try {
     const url = new URL('http://127.0.0.1:8000/api/reports/summary/')
     url.searchParams.set('period', period.value)
-    url.searchParams.set('start', start.value)
-    url.searchParams.set('end', end.value)
+    url.searchParams.set('start', toISO(start.value))
+    url.searchParams.set('end', toISO(end.value))
     const res = await fetch(url, { credentials: 'include' })
     const data = await res.json()
     summary.value = data.data || []
