@@ -4,6 +4,7 @@ import GamePlayList from '../components/GamePlayList.vue'
 import PlayGameForm from '../components/PlayGameForm.vue'
 import AdminDashboard from '../components/AdminDashboard.vue'
 import BusinessDashboard from '../components/BusinessDashboard.vue'
+import ReportsPanel from '../components/ReportsPanel.vue'
 import axios from 'axios'
 
 const routes = [
@@ -12,6 +13,7 @@ const routes = [
   { path: '/gameplays', component: GamePlayList },
   { path: '/admin-dashboard', component: AdminDashboard },
   { path: '/business-dashboard', component: BusinessDashboard },
+  { path: '/business-reports', component: ReportsPanel },
 ]
 
 const router = createRouter({

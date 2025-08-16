@@ -405,3 +405,161 @@ def business_game_detail(request, pk: int):
         bg.save(update_fields=["win_probability"])
 
     return JsonResponse({"message": "Güncellendi.", "win_probability": bg.win_probability})
+
+def _parse_date_range(request):
+    start_str = request.GET.get('start')
+    end_str = request.GET.get('end')
+
+    # varsayılan: bugün
+    today = datetime.now().date()
+    if not start_str and not end_str:
+        return today, today + timedelta(days=1)
+
+    start = parse_date(start_str) if start_str else today
+    end = parse_date(end_str) if end_str else start
+
+    # end dahil görünsün diye +1 gün
+    end_plus = end + timedelta(days=1)
+    return start, end_plus
+
+
+def _business_scope_queryset(request, qs):
+    """
+    Admin tüm işletmeleri görebilir, ?business_code= ile seçebilir.
+    İşletme kullanıcıları sadece kendi işletmesini görür.
+    """
+    user = request.user
+    if user.is_superuser:
+        code = request.GET.get('business_code') or request.GET.get('unique_code')
+        if code:
+            return qs.filter(business__unique_code=code)
+        return qs  # tümü
+    else:
+        # business user ise kendi işletmesi
+        return qs.filter(business__user=user)
+
+
+@require_GET
+@login_required
+def report_gameplays(request):
+    """
+    Listeleme + filtre + sayfalama
+    GET /api/reports/gameplays?start=2025-07-15&end=2025-07-18
+        &game=2&user=hasankose&result=win&page=1&page_size=50
+    """
+    start, end = _parse_date_range(request)
+
+    qs = GamePlay.objects.select_related('business', 'game', 'player') \
+        .filter(timestamp__gte=start, timestamp__lt=end)
+
+    qs = _business_scope_queryset(request, qs)
+
+    # Filtreler
+    game_id = request.GET.get('game')
+    if game_id:
+        qs = qs.filter(game_id=game_id)
+
+    user_param = request.GET.get('user')
+    if user_param:
+        if user_param.isdigit():
+            qs = qs.filter(player_id=int(user_param))
+        else:
+            qs = qs.filter(player__username__icontains=user_param)
+
+    result_param = request.GET.get('result')
+    if result_param in ('win', 'loss'):
+        qs = qs.filter(result=(result_param == 'win'))
+
+    qs = qs.order_by('-timestamp')
+
+    # sayfalama
+    page = int(request.GET.get('page', 1))
+    page_size = min(max(int(request.GET.get('page_size', 50)), 1), 200)
+    paginator = Paginator(qs, page_size)
+    page_obj = paginator.get_page(page)
+
+    items = []
+    for gp in page_obj.object_list:
+        items.append({
+            'business': gp.business.name,
+            'business_code': gp.business.unique_code,
+            'game': gp.game.name,
+            'game_id': gp.game_id,
+            'ip': gp.ip_address,
+            'player': gp.player.username if gp.player else None,
+            'result': 'win' if gp.result else 'loss',
+            'timestamp': gp.timestamp.isoformat(),
+        })
+
+    return JsonResponse({
+        'items': items,
+        'page': page_obj.number,
+        'total': paginator.count,
+        'num_pages': paginator.num_pages,
+        'has_next': page_obj.has_next(),
+        'has_prev': page_obj.has_previous(),
+    })
+
+
+@require_GET
+@login_required
+def report_summary(request):
+    """
+    Özet/gruplama
+    GET /api/reports/summary?period=day|week|month&start=2025-07-01&end=2025-07-31
+    Opsiyonel: &game=2
+    """
+    start, end = _parse_date_range(request)
+
+    period = request.GET.get('period', 'day')
+    if period == 'week':
+        trunc = TruncWeek('timestamp')
+    elif period == 'month':
+        trunc = TruncMonth('timestamp')
+    else:
+        trunc = TruncDay('timestamp')
+
+    qs = GamePlay.objects.filter(timestamp__gte=start, timestamp__lt=end)
+    qs = _business_scope_queryset(request, qs)
+
+    game_id = request.GET.get('game')
+    if game_id:
+        qs = qs.filter(game_id=game_id)
+
+    grouped = qs.annotate(bucket=trunc).values('bucket').annotate(
+        plays=Count('id'),
+        wins=Count('id', filter=Q(result=True)),
+        losses=Count('id', filter=Q(result=False)),
+        unique_ips=Count('ip_address', distinct=True),
+        unique_players=Count('player', distinct=True),
+    ).order_by('bucket')
+
+    data = []
+    for row in grouped:
+        data.append({
+            'bucket': row['bucket'].isoformat() if row['bucket'] else None,
+            'plays': row['plays'],
+            'wins': row['wins'],
+            'losses': row['losses'],
+            'unique_ips': row['unique_ips'],
+            'unique_players': row['unique_players'],
+        })
+
+    return JsonResponse({'period': period, 'data': data})
+
+def parse_date_any(value: str):
+    """'YYYY-MM-DD' ya da 'DD.MM.YYYY' formatlarını kabul eder."""
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(value, fmt).date()
+        except ValueError:
+            continue
+    return None
+def day_bounds(d):
+    """Yerel günün [start, end) aware datetime sınırları."""
+    start_naive = datetime.combine(d, datetime.min.time())
+    start = timezone.make_aware(start_naive)
+    end = start + timedelta(days=1)
+    return start, end

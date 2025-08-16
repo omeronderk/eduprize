@@ -24,7 +24,7 @@
       </div>
       <small>Günlük IP başı limit: {{ summary.business.daily_game_limit_per_ip }}</small>
     </section>
-
+    <button @click="$router.push('/business-reports')">Raporlar</button>
     <section class="card">
       <div class="row">
         <h3>Oyunlar & Olasılıklar</h3>
