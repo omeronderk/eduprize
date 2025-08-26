@@ -13,10 +13,26 @@ from django.contrib.auth import authenticate, login, logout
 from django.views.decorators.csrf import csrf_exempt
 from django.contrib.auth.models import User
 from django.views.decorators.http import require_GET
-from django.db.models import Q
+from django.db.models import Q,Count
 from django.views.decorators.http import require_http_methods
 from django.contrib.auth.decorators import login_required
 from django.db import IntegrityError
+from django.db.models.functions import TruncDay, TruncWeek, TruncMonth
+from django.core.paginator import Paginator, EmptyPage
+from django.utils.dateparse import parse_datetime
+
+def _parse_iso_dt(s, fallback):
+    """ISO string → aware datetime; yoksa fallback döndürür."""
+    if not s:
+        return fallback
+    try:
+        dt = datetime.fromisoformat(s)
+        if timezone.is_naive(dt):
+            dt = timezone.make_aware(dt, timezone.get_current_timezone())
+        return dt
+    except Exception:
+        return fallback
+
 def _ip_in_range(ip: str, range_str: str) -> bool:
     if not range_str:
         return False
@@ -439,116 +455,134 @@ def _business_scope_queryset(request, qs):
         # business user ise kendi işletmesi
         return qs.filter(business__user=user)
 
-
-@require_GET
 @login_required
+@require_GET
 def report_gameplays(request):
-    """
-    Listeleme + filtre + sayfalama
-    GET /api/reports/gameplays?start=2025-07-15&end=2025-07-18
-        &game=2&user=hasankose&result=win&page=1&page_size=50
-    """
-    start_dt, end_dt = _get_range_from_request(request)
+    if not request.user.is_authenticated:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
 
-    qs = GamePlay.objects.select_related('business', 'game', 'player') \
-        .filter(timestamp__gte=start_dt, timestamp__lte=end_dt)
+    try:
+        business = Business.objects.get(user=request.user)
+    except Business.DoesNotExist:
+        return JsonResponse({"error": "Business not found for user"}, status=404)
 
-    qs = _business_scope_queryset(request, qs)
+    start = request.GET.get('start')
+    end = request.GET.get('end')
+    result_filter = request.GET.get('result', 'all')  # all|won|lost
+    game_id = request.GET.get('game_id', '').strip()
+    username = request.GET.get('username', '').strip()
 
-    # Filtreler
-    game_id = request.GET.get('game')
+    page = int(request.GET.get('page', 1))
+    page_size = int(request.GET.get('page_size', 25))
+
+    qs = GamePlay.objects.filter(business=business)
+
+    if start:
+        dt = parse_datetime(start) or timezone.make_aware(timezone.datetime.fromisoformat(start))
+        qs = qs.filter(timestamp__gte=dt)
+    if end:
+        dt = parse_datetime(end) or timezone.make_aware(timezone.datetime.fromisoformat(end))
+        qs = qs.filter(timestamp__lte=dt)
+
+    if result_filter == 'won':
+        qs = qs.filter(result=True)
+    elif result_filter == 'lost':
+        qs = qs.filter(result=False)
+
     if game_id:
         qs = qs.filter(game_id=game_id)
 
-    user_param = request.GET.get('user')
-    if user_param:
-        if user_param.isdigit():
-            qs = qs.filter(player_id=int(user_param))
+    if username:
+        if username.isdigit():
+            qs = qs.filter(player_id=int(username))
         else:
-            qs = qs.filter(player__username__icontains=user_param)
+            qs = qs.filter(player__username__icontains=username)
 
-    result_param = request.GET.get('result')
-    if result_param in ('win', 'loss'):
-        qs = qs.filter(result=(result_param == 'win'))
+    qs = qs.select_related('game', 'player').order_by('-timestamp')
 
-    qs = qs.order_by('-timestamp')
-
-    # sayfalama
-    page = int(request.GET.get('page', 1))
-    page_size = min(max(int(request.GET.get('page_size', 50)), 1), 200)
     paginator = Paginator(qs, page_size)
-    page_obj = paginator.get_page(page)
+    try:
+        page_obj = paginator.page(page)
+    except EmptyPage:
+        page_obj = paginator.page(paginator.num_pages if paginator.num_pages else 1)
 
     items = []
     for gp in page_obj.object_list:
         items.append({
-            'business': gp.business.name,
-            'business_code': gp.business.unique_code,
-            'game': gp.game.name,
-            'game_id': gp.game_id,
-            'ip': gp.ip_address,
-            'player': gp.player.username if gp.player else None,
-            'result': 'win' if gp.result else 'loss',
-            'timestamp': gp.timestamp.isoformat(),
+            "id": gp.id,
+            "timestamp": gp.timestamp.isoformat(),
+            "game_name": gp.game.name if gp.game_id else None,
+            "username": gp.player.username if gp.player_id else None,
+            "ip_address": gp.ip_address,
+            "result": bool(gp.result),
         })
 
     return JsonResponse({
-        'items': items,
-        'page': page_obj.number,
-        'total': paginator.count,
-        'num_pages': paginator.num_pages,
-        'has_next': page_obj.has_next(),
-        'has_prev': page_obj.has_previous(),
+        "items": items,
+        "total": paginator.count,
+        "page": page_obj.number,
+        "page_size": page_size,
     })
 
-
 @require_GET
-@login_required
 def report_summary(request):
-    """
-    Özet/gruplama
-    GET /api/reports/summary?period=day|week|month&start=2025-07-01&end=2025-07-31
-    Opsiyonel: &game=2
-    """
-    start_dt, end_dt = _get_range_from_request(request)
-    qs = GamePlay.objects.filter(timestamp__gte=start_dt, timestamp__lte=end_dt)
-    
-    period = request.GET.get('period', 'day')
-    if period == 'week':
-        trunc = TruncWeek('timestamp')
-    elif period == 'month':
-        trunc = TruncMonth('timestamp')
-    else:
-        trunc = TruncDay('timestamp')
+    if not request.user.is_authenticated:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
 
-    qs = GamePlay.objects.filter(timestamp__gte=start, timestamp__lt=end)
-    qs = _business_scope_queryset(request, qs)
+    # İşletme kısıtı
+    try:
+        business = Business.objects.get(user=request.user)
+    except Business.DoesNotExist:
+        return JsonResponse({"error": "Business not found for user"}, status=404)
 
-    game_id = request.GET.get('game')
+    start = request.GET.get('start')  # ISO veya boş
+    end = request.GET.get('end')
+    result_filter = request.GET.get('result', 'all')  # all|won|lost
+    game_id = request.GET.get('game_id', '').strip()
+    username = request.GET.get('username', '').strip()
+
+    qs = GamePlay.objects.filter(business=business)
+
+    # Tarih aralığı
+    if start:
+        dt = parse_datetime(start) or timezone.make_aware(timezone.datetime.fromisoformat(start))
+        qs = qs.filter(timestamp__gte=dt)
+    if end:
+        dt = parse_datetime(end) or timezone.make_aware(timezone.datetime.fromisoformat(end))
+        qs = qs.filter(timestamp__lte=dt)
+
+    # Sonuç filtresi
+    if result_filter == 'won':
+        qs = qs.filter(result=True)
+    elif result_filter == 'lost':
+        qs = qs.filter(result=False)
+
+    # Oyun filtresi
     if game_id:
         qs = qs.filter(game_id=game_id)
 
-    grouped = qs.annotate(bucket=trunc).values('bucket').annotate(
-        plays=Count('id'),
-        wins=Count('id', filter=Q(result=True)),
-        losses=Count('id', filter=Q(result=False)),
-        unique_ips=Count('ip_address', distinct=True),
-        unique_players=Count('player', distinct=True),
-    ).order_by('bucket')
+    # Kullanıcı filtresi (player)
+    if username:
+        if username.isdigit():
+            qs = qs.filter(player_id=int(username))
+        else:
+            qs = qs.filter(player__username__icontains=username)
 
-    data = []
-    for row in grouped:
-        data.append({
-            'bucket': row['bucket'].isoformat() if row['bucket'] else None,
-            'plays': row['plays'],
-            'wins': row['wins'],
-            'losses': row['losses'],
-            'unique_ips': row['unique_ips'],
-            'unique_players': row['unique_players'],
-        })
+    played = qs.count()
+    won = qs.filter(result=True).count()
+    lost = qs.filter(result=False).count()
+    unique_ip = qs.values('ip_address').distinct().count()
+    unique_player = qs.values('player_id').distinct().count()
 
-    return JsonResponse({'period': period, 'data': data})
-
+    return JsonResponse({
+        "summary": {
+            "played": played,
+            "won": won,
+            "lost": lost,
+            "unique_ip": unique_ip,
+            "unique_player": unique_player,
+        }
+    })
 def _parse_date_any(s: str):
     if not s:
         return None
@@ -570,3 +604,4 @@ def _get_range_from_request(request):
     start_dt = timezone.make_aware(datetime.combine(start_date, time.min), tz)
     end_dt   = timezone.make_aware(datetime.combine(end_date, time.max), tz)
     return start_dt, end_dt
+

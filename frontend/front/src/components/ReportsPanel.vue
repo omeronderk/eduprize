@@ -1,17 +1,17 @@
 <!-- src/components/ReportsPanel.vue -->
 <template>
-  <div class="reports-wrap">
-    <!-- ÜST FİLTRELER -->
-    <div class="filters">
-      <div>
+  <div class="reports">
+    <!-- Üst Filtre Satırı -->
+    <div class="filters-row">
+      <div class="filter">
         <label>Başlangıç</label>
         <input type="date" v-model="start" />
       </div>
-      <div>
+      <div class="filter">
         <label>Bitiş</label>
         <input type="date" v-model="end" />
       </div>
-      <div>
+      <div class="filter">
         <label>Dönem</label>
         <select v-model="period">
           <option value="day">Gün</option>
@@ -19,65 +19,70 @@
           <option value="month">Ay</option>
         </select>
       </div>
-      <button @click="fetchSummary" :disabled="loadingSummary">Özeti Getir</button>
-    </div>
-
-    <!-- ÖZET TABLOSU -->
-    <div class="card">
-      <h3>Özet</h3>
-      <div v-if="loadingSummary">Yükleniyor…</div>
-      <table v-else class="table">
-        <thead>
-          <tr>
-            <th>Zaman</th>
-            <th>Oynama</th>
-            <th>Kazanma</th>
-            <th>Kaybetme</th>
-            <th>Tekil IP</th>
-            <th>Tekil Oyuncu</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="row in summary" :key="row.bucket">
-            <td>{{ fmt(row.bucket) }}</td>
-            <td>{{ row.plays }}</td>
-            <td>{{ row.wins }}</td>
-            <td>{{ row.losses }}</td>
-            <td>{{ row.unique_ips }}</td>
-            <td>{{ row.unique_players }}</td>
-          </tr>
-          <tr v-if="summary.length === 0">
-            <td colspan="6">Kayıt yok</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <!-- KAYIT LİSTESİ FİLTRELERİ -->
-    <div class="filters">
-      <div>
-        <label>Oyun ID</label>
-        <input type="number" v-model.number="listFilters.game" placeholder="örn. 2" />
-      </div>
-      <div>
-        <label>Kullanıcı</label>
-        <input type="text" v-model="listFilters.user" placeholder="kullanıcı adı veya id" />
-      </div>
-      <div>
+      <div class="filter">
         <label>Sonuç</label>
-        <select v-model="listFilters.result">
-          <option value="">Tümü</option>
-          <option value="win">Kazanma</option>
-          <option value="loss">Kaybetme</option>
+        <select v-model="resultFilter">
+          <option value="all">Tümü</option>
+          <option value="won">Kazandı</option>
+          <option value="lost">Kaybetti</option>
         </select>
       </div>
-      <button @click="resetAndFetchList" :disabled="loadingList">Kayırları Getir</button>
+      <button class="btn" @click="refreshAll" :disabled="loadingSummary || loadingItems">Özeti Getir</button>
     </div>
 
-    <!-- KAYIT LİSTESİ -->
-    <div class="card">
-      <h3>Kayıtlar</h3>
-      <div v-if="loadingList">Yükleniyor…</div>
+    <!-- Özet kutuları -->
+    <div class="summary">
+      <div class="card">
+        <div class="title">Oynama</div>
+        <div class="value">{{ summary.played }}</div>
+      </div>
+      <div class="card">
+        <div class="title">Kazanma</div>
+        <div class="value">{{ summary.won }}</div>
+      </div>
+      <div class="card">
+        <div class="title">Kaybetme</div>
+        <div class="value">{{ summary.lost }}</div>
+      </div>
+      <div class="card">
+        <div class="title">Tekil IP</div>
+        <div class="value">{{ summary.unique_ip }}</div>
+      </div>
+      <div class="card">
+        <div class="title">Tekil Oyuncu</div>
+        <div class="value">{{ summary.unique_player }}</div>
+      </div>
+    </div>
+
+    <p v-if="errorSummary" class="error">{{ errorSummary }}</p>
+
+    <!-- Kayıtlar Filtreleri -->
+    <div class="filters-row second">
+      <div class="filter">
+        <label>Oyun ID</label>
+        <input type="text" placeholder="örn. 2" v-model="gameId" />
+      </div>
+      <div class="filter">
+        <label>Kullanıcı</label>
+        <input type="text" placeholder="kullanıcı adı veya id" v-model="username" />
+      </div>
+      <div class="filter">
+        <label>Sayfa Boyutu</label>
+        <select v-model.number="pageSize">
+          <option :value="10">10</option>
+          <option :value="25">25</option>
+          <option :value="50">50</option>
+        </select>
+      </div>
+      <button class="btn" @click="fetchItems" :disabled="loadingItems">Kayıtları Getir</button>
+    </div>
+
+    <p v-if="errorItems" class="error">{{ errorItems }}</p>
+
+    <!-- Kayıtlar Tablosu -->
+    <div class="table-wrap">
+      <div v-if="loadingItems" class="loading">Yükleniyor…</div>
+
       <table v-else class="table">
         <thead>
           <tr>
@@ -89,132 +94,216 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="it in list.items" :key="it.timestamp + it.ip">
-            <td>{{ fmt(it.timestamp) }}</td>
-            <td>{{ it.game }}</td>
-            <td>{{ it.player || '-' }}</td>
-            <td>{{ it.ip }}</td>
+          <tr v-if="!items.length">
+            <td colspan="5">Kayıt yok</td>
+          </tr>
+          <tr v-for="row in items" :key="row.id || row.timestamp + '-' + (row.ip_address || '')">
+            <td>{{ formatTs(row.timestamp) }}</td>
+            <td>{{ row.game_name || row.game || '-' }}</td>
+            <td>{{ row.username || row.user || '-' }}</td>
+            <td>{{ row.ip_address || '-' }}</td>
             <td>
-              <span :class="it.result === 'win' ? 'pill green' : 'pill red'">
-                {{ it.result === 'win' ? 'KAZANDI' : 'KAYBETTİ' }}
+              <span :class="row.result === true || row.result === 'won' ? 'pill won' : 'pill lost'">
+                {{ (row.result === true || row.result === 'won') ? 'Kazandı' : 'Kaybetti' }}
               </span>
             </td>
-          </tr>
-          <tr v-if="list.items.length === 0">
-            <td colspan="5">Kayıt yok</td>
           </tr>
         </tbody>
       </table>
 
-      <div class="pager" v-if="list.total > 0">
-        <button :disabled="page<=1" @click="goto(page-1)">‹ Önceki</button>
-        <span>Sayfa {{ page }} / {{ list.num_pages }}</span>
-        <button :disabled="page>=list.num_pages" @click="goto(page+1)">Sonraki ›</button>
+      <!-- Sayfalama -->
+      <div class="pager" v-if="total > pageSize">
+        <button class="btn" @click="prevPage" :disabled="page <= 1">Önceki</button>
+        <span>Sayfa {{ page }} / {{ totalPages }}</span>
+        <button class="btn" @click="nextPage" :disabled="page >= totalPages">Sonraki</button>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
-const toISO = (s) => {
-  if (!s) return ''
-  // zaten ISO ise bırak
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
-  // dd.MM.yyyy veya dd/MM/yyyy -> yyyy-mm-dd
-  const m = s.match(/^(\d{2})[./](\d{2})[./](\d{4})$/)
-  return m ? `${m[3]}-${m[2]}-${m[1]}` : s
-}
-const today = new Date()
-const toYMD = (d) => d.toISOString().slice(0,10)
-const sevenDaysAgo = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 7)
+import { ref, computed, onMounted } from 'vue'
 
-const start = ref(toYMD(sevenDaysAgo))
-const end = ref(toYMD(today))
-const period = ref('day')
-
+/** ----------------- STATE ----------------- **/
 const loadingSummary = ref(false)
-const summary = ref([])
+const loadingItems = ref(false)
+const errorSummary = ref('')
+const errorItems = ref('')
 
-const fmt = (s) => {
-  if (!s) return '-'
-  // '2025-07-18T00:00:00+03:00' vb → daha okunur
-  try { return new Date(s).toLocaleString() } catch { return s }
+const summary = ref({
+  played: 0,
+  won: 0,
+  lost: 0,
+  unique_ip: 0,
+  unique_player: 0,
+})
+
+const items = ref([])
+const page = ref(1)
+const pageSize = ref(25)
+const total = ref(0)
+
+/** Filtreler */
+const start = ref('')               // 'YYYY-MM-DD'
+const end = ref('')                 // 'YYYY-MM-DD'
+const period = ref('day')           // day|week|month
+const resultFilter = ref('all')     // all|won|lost
+const gameId = ref('')
+const username = ref('')
+
+/** ----------------- HELPERS ----------------- **/
+function toIso(d, endOfDay = false) {
+  if (!d) return ''
+  return `${d}${endOfDay ? 'T23:59:59' : 'T00:00:00'}`
 }
 
+function formatTs(ts) {
+  if (!ts) return '-'
+  try {
+    return new Date(ts).toLocaleString('tr-TR')
+  } catch {
+    return String(ts)
+  }
+}
+
+async function doGet(url) {
+  const res = await fetch(url, { credentials: 'include' })
+  let data
+  try {
+    data = await res.json()
+  } catch {
+    throw new Error(`Beklenmeyen yanıt (JSON değil). HTTP ${res.status}`)
+  }
+  if (!res.ok) {
+    throw new Error(data?.error || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+/** ----------------- FETCHERS ----------------- **/
 async function fetchSummary() {
   loadingSummary.value = true
+  errorSummary.value = ''
   try {
-    const url = new URL('http://127.0.0.1:8000/api/reports/summary/')
-    url.searchParams.set('period', period.value)
-    url.searchParams.set('start', toISO(start.value))
-    url.searchParams.set('end', toISO(end.value))
-    const res = await fetch(url, { credentials: 'include' })
-    const data = await res.json()
-    summary.value = data.data || []
+    const qs = new URLSearchParams()
+    if (start.value) qs.set('start', toIso(start.value, false))
+    if (end.value)   qs.set('end',   toIso(end.value,   true))
+    if (period.value) qs.set('period', period.value)
+    if (resultFilter.value) qs.set('result', resultFilter.value)
+
+    const url = `http://127.0.0.1:8000/api/reports/summary?${qs.toString()}`
+    const data = await doGet(url)
+    const s = data?.summary || {}
+    summary.value = {
+      played: Number(s.played ?? 0),
+      won: Number(s.won ?? 0),
+      lost: Number(s.lost ?? 0),
+      unique_ip: Number(s.unique_ip ?? 0),
+      unique_player: Number(s.unique_player ?? 0),
+    }
+  } catch (e) {
+    errorSummary.value = String(e.message || e)
+    summary.value = { played: 0, won: 0, lost: 0, unique_ip: 0, unique_player: 0 }
   } finally {
     loadingSummary.value = false
   }
 }
 
-/* -------- Liste -------- */
-const loadingList = ref(false)
-const list = ref({ items: [], total: 0, num_pages: 1 })
-const page = ref(1)
-const pageSize = ref(25)
-const listFilters = ref({
-  game: '',
-  user: '',
-  result: '',
-})
-
-function resetAndFetchList() {
-  page.value = 1
-  fetchList()
-}
-
-async function fetchList() {
-  loadingList.value = true
+async function fetchItems() {
+  loadingItems.value = true
+  errorItems.value = ''
   try {
-    const url = new URL('http://127.0.0.1:8000/api/reports/gameplays/')
-    url.searchParams.set('start', start.value)
-    url.searchParams.set('end', end.value)
-    if (listFilters.value.game)  url.searchParams.set('game', String(listFilters.value.game))
-    if (listFilters.value.user)  url.searchParams.set('user', listFilters.value.user)
-    if (listFilters.value.result) url.searchParams.set('result', listFilters.value.result)
-    url.searchParams.set('page', String(page.value))
-    url.searchParams.set('page_size', String(pageSize.value))
+    const qs = new URLSearchParams()
+    if (start.value) qs.set('start', toIso(start.value, false))
+    if (end.value)   qs.set('end',   toIso(end.value,   true))
+    if (resultFilter.value) qs.set('result', resultFilter.value)
+    if (gameId.value) qs.set('game_id', gameId.value)
+    if (username.value) qs.set('username', username.value)
+    qs.set('page', String(page.value))
+    qs.set('page_size', String(pageSize.value))
 
-    const res = await fetch(url, { credentials: 'include' })
-    const data = await res.json()
-    list.value = data
+    const url = `http://127.0.0.1:8000/api/reports/gameplays?${qs.toString()}`
+    const data = await doGet(url)
+    items.value = Array.isArray(data?.items) ? data.items : []
+    total.value = Number(data?.total ?? 0)
+    page.value = Number(data?.page ?? 1)
+    pageSize.value = Number(data?.page_size ?? pageSize.value)
+  } catch (e) {
+    errorItems.value = String(e.message || e)
+    items.value = []
+    total.value = 0
   } finally {
-    loadingList.value = false
+    loadingItems.value = false
   }
 }
 
-function goto(p) {
-  page.value = p
-  fetchList()
+async function refreshAll() {
+  page.value = 1
+  await Promise.all([fetchSummary(), fetchItems()])
 }
 
-/* ilk yükleme */
-fetchSummary()
-fetchList()
+/** ----------------- PAGINATION ----------------- **/
+const totalPages = computed(() => {
+  if (!total.value || !pageSize.value) return 1
+  return Math.max(1, Math.ceil(total.value / pageSize.value))
+})
+
+function prevPage() {
+  if (page.value > 1) {
+    page.value -= 1
+    fetchItems()
+  }
+}
+function nextPage() {
+  if (page.value < totalPages.value) {
+    page.value += 1
+    fetchItems()
+  }
+}
+
+/** İlk yükleme */
+onMounted(() => {
+  refreshAll()
+})
 </script>
 
 <style scoped>
-.reports-wrap { display: grid; gap: 16px; }
-.filters { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
-.filters label { display:block; font-size: 12px; opacity:.8; margin-bottom:4px; }
-.filters input, .filters select { padding:6px 10px; background:#1b1b1b; color:#fff; border:1px solid #333; border-radius:6px; }
-.filters button { padding:8px 12px; background:#2e7d32; border:none; border-radius:6px; color:#fff; }
-.card { background:#151515; border:1px solid #2a2a2a; border-radius:10px; padding:12px; }
-.table { width:100%; border-collapse: collapse; font-size:14px; }
-.table th, .table td { border-bottom:1px solid #2a2a2a; padding:8px; text-align:left; }
-.pager { display:flex; gap:12px; align-items:center; justify-content:flex-end; margin-top:10px; }
-.pager button { padding:6px 10px; background:#333; color:#fff; border:none; border-radius:6px; }
-.pill { padding:2px 8px; border-radius:999px; font-size:12px; }
-.pill.green { background:#144d2a; color:#9be7a1; }
-.pill.red   { background:#4d1414; color:#ffb4ab; }
+.reports { color: #eaeaea; }
+.filters-row {
+  display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin: 10px 0 16px;
+}
+.filters-row.second { margin-top: 6px; }
+.filter { display: flex; flex-direction: column; min-width: 160px; }
+.filter label { font-size: 12px; color: #bdbdbd; margin-bottom: 6px; }
+
+.btn {
+  background: #2e7d32; border: none; color: white; padding: 8px 12px;
+  border-radius: 6px; cursor: pointer;
+}
+.btn:disabled { opacity: .6; cursor: default; }
+
+.summary {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 16px;
+}
+.card { background: #1e1e1e; border-radius: 10px; padding: 14px; text-align: center; }
+.card .title { color: #9e9e9e; font-size: 12px; margin-bottom: 6px; }
+.card .value { font-size: 22px; font-weight: 700; }
+
+.table-wrap { background: #121212; border-radius: 8px; padding: 8px; }
+.table { width: 100%; border-collapse: collapse; }
+.table th, .table td { border-bottom: 1px solid #2c2c2c; padding: 10px; text-align: left; font-size: 14px; }
+.table th { color: #bdbdbd; font-weight: 600; }
+
+.loading { padding: 14px; color: #bdbdbd; }
+
+.pill { padding: 4px 8px; border-radius: 999px; font-size: 12px; }
+.pill.won { background: #1b5e20; }
+.pill.lost { background: #6d1b1b; }
+
+.error { margin: 8px 0; color: #ef5350; }
+
+.pager {
+  display: flex; gap: 10px; align-items: center; justify-content: center;
+  padding: 10px 0 2px;
+}
 </style>
